@@ -1,0 +1,804 @@
+/*
+Step 1. Create App Registration for Databricks -> USed for Oauth from Spark -> ADLS
+Step 2. Enter Application/ClientId and App Reg Secret Here in Parameters
+Step 3. Upload Template
+Step 4. Give App Registration Access to Blob -Storage Blob Data Contributor
+Step 5. Give App Registration Access to Read/List Secrets in Access Policies of Key Vault
+Step 5. Give AzureDatabricks Object Id access to KV and BlobStorage
+Step 5. Create Secret Scope in Databricks https://<databricks-instance>#secrets/createScope //demoscope
+          Example : https://adb-7361764398850383.3.azuredatabricks.net/?o=7361764398850383#secrets/createScope
+
+Step 7. Need to setup account console for databricks - requires GA Role on Azure - Account or a GA to enable Account Admin
+Step 8. Get into account consosle and set up Cloud Resource NCC and update the workspace with the NCC
+Step 9. Configure Cluster with Secrets for Authentication
+ 
+spark.hadoop.fs.azure.account.oauth.provider.type.btxprecisiondatalake.dfs.core.windows.net org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider
+spark.hadoop.fs.azure.account.auth.type.btxprecisiondatalake.dfs.core.windows.net OAuth
+spark.hadoop.fs.azure.account.oauth2.client.id.btxprecisiondatalake.dfs.core.windows.net {{secrets/ScopeNameYouCreatedInStep5/app-client-id-secret}}
+spark.hadoop.fs.azure.account.oauth2.client.endpoint.btxprecisiondatalake.dfs.core.windows.net {{secrets/ScopeNameYouCreatedInStep5/tenant-url}}
+spark.hadoop.fs.azure.account.oauth2.client.secret.btxprecisiondatalake.dfs.core.windows.net {{secrets/ScopeNameYouCreatedInStep5/app-client-secret}}
+
+
+aex.dev.azure.com to setup a brand new devops organization
+
+*/
+
+
+
+
+
+
+
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "kv_name": {
+      "defaultValue": "Platinum-Dermatology-cloud-kv",
+      "type": "String"
+    },
+    "vnet_name": {
+      "defaultValue": "Platinum-Dermatology-cloud-vnet",
+      "type": "String"
+    },
+    "networkSecurityGroups_public_nsg_name": {
+      "defaultValue": "public-nsg",
+      "type": "String"
+    },
+    "privateEndpoints_databricks_blob_name": {
+      "defaultValue": "Platinum-Dermatology-cloud-blob",
+      "type": "String"
+    },
+    "datalake_name": {
+      "defaultValue": "platinumdermdatalake",
+      "type": "String"
+    },
+    "networkSecurityGroups_private_nsg_name": {
+      "defaultValue": "private-nsg",
+      "type": "String"
+    },
+    "databricks_name": {
+      "defaultValue": "Platinum-Dermatology-cloud-databricks",
+      "type": "String"
+    },
+    "privateDnsZones_privatelink_azuredatabricks_net_name": {
+      "defaultValue": "privatelink.azuredatabricks.net",
+      "type": "String"
+    },
+    "accessConnectors___externalid": {
+      "defaultValue": "/subscriptions/325e073e-85f2-4837-a559-3ae5352303ba/resourceGroups/PDP-DataPlatform-CentralUS/providers/Microsoft.Databricks/accessConnectors/*",
+      "type": "String"
+    },
+    "appServicePrincipalObjectId": {
+      "defaultValue": "<sp-object-id-here>",
+      "type": "String"
+    },
+    "tenantid": {
+      "defaultValue": "250c46c6-aaf9-44cb-bb21-b159440ca604",
+      "type": "String"
+    },
+    "tenant_url": {
+      "defaultValue": "https://login.microsoftonline.com/250c46c6-aaf9-44cb-bb21-b159440ca604/oauth2/token",
+      "type": "String"
+    },
+    "appClientIdSecret": {
+      "defaultValue": "3178324a-fdc9-4075-9733-80ad51e35f8a",
+      "type": "String"
+    },
+    "appClientSecret": {
+      "defaultValue": "",
+      "type": "SecureString"
+    },
+    "Owner": {
+      "defaultValue": "Shane Starnes",
+      "type": "String"
+    },
+    "Product": {
+      "defaultValue": "DataMart",
+      "type": "String"
+    },
+    "Region": {
+      "defaultValue": "CentralUS",
+      "type": "String"
+    }
+  },
+  "variables": {},
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-04-01",
+      "name": "[parameters('networkSecurityGroups_private_nsg_name')]",
+      "location": "centralus",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-worker-inbound",
+            "properties": {
+              "description": "Required for worker nodes communication within a cluster.",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "VirtualNetwork",
+              "access": "Allow",
+              "priority": 100,
+              "direction": "Inbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-databricks-webapp",
+            "properties": {
+              "description": "Required for workers communication with Databricks Webapp.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "AzureDatabricks",
+              "access": "Allow",
+              "priority": 100,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-sql",
+            "properties": {
+              "description": "Required for workers communication with Azure SQL services.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "3306",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "Sql",
+              "access": "Allow",
+              "priority": 101,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-storage",
+            "properties": {
+              "description": "Required for workers communication with Azure Storage services.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "Storage",
+              "access": "Allow",
+              "priority": 102,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-worker-outbound",
+            "properties": {
+              "description": "Required for worker nodes communication within a cluster.",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "VirtualNetwork",
+              "access": "Allow",
+              "priority": 103,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-eventhub",
+            "properties": {
+              "description": "Required for worker communication with Azure Eventhub services.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "9093",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "EventHub",
+              "access": "Allow",
+              "priority": 104,
+              "direction": "Outbound"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-04-01",
+      "name": "[parameters('networkSecurityGroups_public_nsg_name')]",
+      "location": "centralus",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-worker-inbound",
+            "properties": {
+              "description": "Required for worker nodes communication within a cluster.",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "VirtualNetwork",
+              "access": "Allow",
+              "priority": 100,
+              "direction": "Inbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-databricks-webapp",
+            "properties": {
+              "description": "Required for workers communication with Databricks Webapp.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "AzureDatabricks",
+              "access": "Allow",
+              "priority": 100,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-sql",
+            "properties": {
+              "description": "Required for workers communication with Azure SQL services.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "3306",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "Sql",
+              "access": "Allow",
+              "priority": 101,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-storage",
+            "properties": {
+              "description": "Required for workers communication with Azure Storage services.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "Storage",
+              "access": "Allow",
+              "priority": 102,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-worker-outbound",
+            "properties": {
+              "description": "Required for worker nodes communication within a cluster.",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "VirtualNetwork",
+              "access": "Allow",
+              "priority": 103,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Microsoft.Databricks-workspaces_UseOnly_databricks-worker-to-eventhub",
+            "properties": {
+              "description": "Required for worker communication with Azure Eventhub services.",
+              "protocol": "tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "9093",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "destinationAddressPrefix": "EventHub",
+              "access": "Allow",
+              "priority": 104,
+              "direction": "Outbound"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2018-09-01",
+      "name": "[parameters('privateDnsZones_privatelink_azuredatabricks_net_name')]",
+      "location": "global",
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-04-01",
+      "name": "[parameters('vnet_name')]",
+      "location": "centralus",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('networkSecurityGroups_private_nsg_name'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('networkSecurityGroups_public_nsg_name'))]"
+      ],
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.202.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "default",
+            "properties": {
+              "addressPrefix": "10.202.0.0/24",
+              "serviceEndpoints": [
+                {
+                  "service": "Microsoft.Storage",
+                  "locations": [
+                    "centralus"
+                  ]
+                },
+                {
+                  "service": "Microsoft.KeyVault",
+                  "locations": [
+                    "*"
+                  ]
+                }
+              ],
+              "delegations": [],
+              "privateEndpointNetworkPolicies": "Disabled",
+              "privateLinkServiceNetworkPolicies": "Enabled"
+            }
+          },
+          {
+            "name": "databricks-private-subnet",
+            "properties": {
+              "addressPrefix": "10.202.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('networkSecurityGroups_private_nsg_name'))]"
+              },
+              "serviceEndpoints": [
+                {
+                  "service": "Microsoft.KeyVault",
+                  "locations": [
+                    "*"
+                  ]
+                },
+                {
+                  "service": "Microsoft.Storage",
+                  "locations": [
+                    "centralus"
+                  ]
+                }
+              ],
+              "delegations": [
+                {
+                  "name": "Microsoft.Databricks.workspaces",
+                  "properties": {
+                    "serviceName": "Microsoft.Databricks/workspaces"
+                  }
+                }
+              ],
+              "privateEndpointNetworkPolicies": "Disabled",
+              "privateLinkServiceNetworkPolicies": "Enabled"
+            }
+          },
+          {
+            "name": "databricks-public-subnet",
+            "properties": {
+              "addressPrefix": "10.202.2.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('networkSecurityGroups_public_nsg_name'))]"
+              },
+              "serviceEndpoints": [
+                {
+                  "service": "Microsoft.KeyVault",
+                  "locations": [
+                    "*"
+                  ]
+                },
+                {
+                  "service": "Microsoft.Storage",
+                  "locations": [
+                    "centralus"
+                  ]
+                }
+              ],
+              "delegations": [
+                {
+                  "name": "Microsoft.Databricks.workspaces",
+                  "properties": {
+                    "serviceName": "Microsoft.Databricks/workspaces"
+                  }
+                }
+              ],
+              "privateEndpointNetworkPolicies": "Disabled",
+              "privateLinkServiceNetworkPolicies": "Enabled"
+            }
+          },
+          {
+            "name": "GatewaySubnet",
+            "properties": {
+              "addressPrefix": "10.202.3.0/24",
+              "serviceEndpoints": [],
+              "delegations": [],
+              "privateEndpointNetworkPolicies": "Disabled",
+              "privateLinkServiceNetworkPolicies": "Enabled"
+            }
+          }
+        ],
+        "virtualNetworkPeerings": [],
+        "enableDdosProtection": false
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2018-09-01",
+      "name": "[concat(parameters('privateDnsZones_privatelink_azuredatabricks_net_name'), '/', parameters('vnet_name'), '-link')]",
+      "location": "global",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', parameters('privateDnsZones_privatelink_azuredatabricks_net_name'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name'))]"
+      ],
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-02-01",
+      "name": "[parameters('kv_name')]",
+      "location": "centralus",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name'))]"
+      ],
+      "properties": {
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "tenantId": "[parameters('tenantid')]",
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "defaultAction": "Deny",
+          "ipRules": [
+            {
+              "value": "20.246.124.243/32"
+            }
+          ],
+          "virtualNetworkRules": [
+            {
+              "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name')), '/subnets/default')]",
+              "ignoreMissingVnetServiceEndpoint": false
+            },
+            {
+              "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name')), '/subnets/databricks-private-subnet')]",
+              "ignoreMissingVnetServiceEndpoint": false
+            },
+            {
+              "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name')), '/subnets/databricks-public-subnet')]",
+              "ignoreMissingVnetServiceEndpoint": false
+            }
+          ]
+        },
+        "accessPolicies": [
+          {
+            "tenantId": "[parameters('tenantid')]",
+            "objectId": "[parameters('appServicePrincipalObjectId')]",
+            "permissions": {
+              "keys": [],
+              "secrets": [
+                "Get",
+                "List"
+              ],
+              "certificates": []
+            }
+          }
+        ],
+        "enabledForDeployment": false,
+        "enabledForDiskEncryption": false,
+        "enabledForTemplateDeployment": false,
+        "enableSoftDelete": true,
+        "softDeleteRetentionInDays": 90,
+        "enableRbacAuthorization": false,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-02-01",
+      "name": "[concat(parameters('kv_name'), '/app-client-id-secret')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('kv_name'))]"
+      ],
+      "properties": {
+        "value": "[parameters('appClientIdSecret')]",
+        "contentType": "Service Principal App (client) ID",
+        "attributes": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-02-01",
+      "name": "[concat(parameters('kv_name'), '/app-client-secret')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('kv_name'))]"
+      ],
+      "properties": {
+        "value": "[parameters('appClientSecret')]",
+        "contentType": "Application (client) Secret Value",
+        "attributes": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-02-01",
+      "name": "[concat(parameters('kv_name'), '/tenant-id')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('kv_name'))]"
+      ],
+      "properties": {
+        "value": "[parameters('tenantid')]",
+        "contentType": "Directory (tenant) ID",
+        "attributes": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-02-01",
+      "name": "[concat(parameters('kv_name'), '/tenant-url')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('kv_name'))]"
+      ],
+      "properties": {
+        "value": "[parameters('tenant_url')]",
+        "contentType": "Directory (tenant) Url",
+        "attributes": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[parameters('datalake_name')]",
+      "location": "centralus",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name'))]"
+      ],
+      "sku": {
+        "name": "Standard_RAGRS",
+        "tier": "Standard"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "isHnsEnabled": true,
+        "dnsEndpointType": "Standard",
+        "defaultToOAuthAuthentication": false,
+        "publicNetworkAccess": "Enabled",
+        "allowCrossTenantReplication": true,
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": true,
+        "allowSharedKeyAccess": true,
+        "networkAcls": {
+          "resourceAccessRules": [
+            {
+              "tenantId": "[parameters('tenantid')]",
+              "resourceId": "[parameters('accessConnectors___externalid')]"
+            }
+          ],
+          "bypass": "AzureServices",
+          "virtualNetworkRules": [
+            {
+              "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name')), '/subnets/databricks-private-subnet')]",
+              "action": "Allow"
+            },
+            {
+              "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name')), '/subnets/databricks-public-subnet')]",
+              "action": "Allow"
+            },
+            {
+              "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name')), '/subnets/default')]",
+              "action": "Allow"
+            }
+          ],
+          "ipRules": [
+            {
+              "value": "20.246.124.243",
+              "action": "Allow"
+            },
+            {
+              "value": "8.42.53.250",
+              "action": "Allow"
+            },
+            {
+              "value": "104.7.136.185",
+              "action": "Allow"
+            }
+          ],
+          "defaultAction": "Deny"
+        },
+        "supportsHttpsTrafficOnly": true,
+        "encryption": {
+          "requireInfrastructureEncryption": false,
+          "services": {
+            "file": {
+              "keyType": "Account",
+              "enabled": true
+            },
+            "blob": {
+              "keyType": "Account",
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        },
+        "accessTier": "Hot"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('datalake_name'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('datalake_name'))]"
+      ],
+      "properties": {
+        "cors": {
+          "corsRules": []
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('datalake_name'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('datalake_name'))]"
+      ],
+      "properties": {
+        "cors": {
+          "corsRules": []
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('datalake_name'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('datalake_name'))]"
+      ],
+      "properties": {
+        "cors": {
+          "corsRules": []
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('datalake_name'), '/default/etl-files')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('datalake_name'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('datalake_name'), '/default/uc_root')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('datalake_name'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Databricks/workspaces",
+      "apiVersion": "2023-02-01",
+      "name": "[parameters('databricks_name')]",
+      "location": "centralus",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name'))]"
+      ],
+      "tags": {
+        "Owner": "[parameters('Owner')]",
+        "Product": "[parameters('Product')]",
+        "Region": "[parameters('Region')]"
+      },
+      "sku": {
+        "name": "premium"
+      },
+      "properties": {
+        "publicNetworkAccess": "Enabled",
+        "requiredNsgRules": "AllRules",
+        "managedResourceGroupId": "[concat(subscription().id, '/resourceGroups/PDP-DataPlatform-CentralUS-managed')]",
+        "parameters": {
+          "customPrivateSubnetName": {
+            "value": "databricks-private-subnet"
+          },
+          "customPublicSubnetName": {
+            "value": "databricks-public-subnet"
+          },
+          "customVirtualNetworkId": {
+            "value": "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name'))]"
+          },
+          "enableNoPublicIp": {
+            "value": true
+          },
+          "natGatewayName": {
+            "value": "nat-gateway"
+          },
+          "prepareEncryption": {
+            "value": false
+          },
+          "publicIpName": {
+            "value": "nat-gw-public-ip"
+          },
+          "requireInfrastructureEncryption": {
+            "value": false
+          },
+          "storageAccountSkuName": {
+            "value": "Standard_GRS"
+          },
+          "vnetAddressPrefix": {
+            "value": "10.202"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-04-01",
+      "name": "[parameters('privateEndpoints_databricks_blob_name')]",
+      "location": "centralus",
+      "dependsOn": [
+        "[resourceId('Microsoft.Databricks/workspaces', parameters('databricks_name'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name'))]"
+      ],
+      "properties": {
+        "privateLinkServiceConnections": [
+          {
+            "name": "[parameters('privateEndpoints_databricks_blob_name')]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Databricks/workspaces', parameters('databricks_name'))]",
+              "groupIds": [
+                "databricks_ui_api"
+              ],
+              "privateLinkServiceConnectionState": {
+                "status": "Approved",
+                "description": "Auto-approved",
+                "actionsRequired": "None"
+              }
+            }
+          }
+        ],
+        "manualPrivateLinkServiceConnections": [],
+        "customNetworkInterfaceName": "[concat(parameters('privateEndpoints_databricks_blob_name'), '-nic')]",
+        "subnet": {
+          "id": "[concat(resourceId('Microsoft.Network/virtualNetworks', parameters('vnet_name')), '/subnets/default')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-04-01",
+      "name": "[concat(parameters('privateEndpoints_databricks_blob_name'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpoints_databricks_blob_name'))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', parameters('privateDnsZones_privatelink_azuredatabricks_net_name'))]"
+      ],
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "privatelink-azuredatabricks-net",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', parameters('privateDnsZones_privatelink_azuredatabricks_net_name'))]"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
